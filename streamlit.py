@@ -396,6 +396,15 @@ def download_button_with_data(data, filename, label, mime_type="application/octe
     href = f'<a href="data:{mime_type};base64,{b64_data}" download="{filename}">{label}</a>'
     st.markdown(href, unsafe_allow_html=True)
 
+def load_nifti_file(uploaded_file):
+    """Charge un fichier NIfTI depuis un fichier téléversé en utilisant un fichier temporaire"""
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.nii.gz') as tmp_file:
+        tmp_file.write(uploaded_file.read())
+        tmp_file_path = tmp_file.name
+    nifti_data = nib.load(tmp_file_path).get_fdata()
+    os.unlink(tmp_file_path)
+    return nifti_data
+
 # Sidebar pour la navigation
 with st.sidebar:
     st.markdown("## 🎛️ Navigation")
@@ -658,17 +667,20 @@ elif selected_tab == "📈 Statistiques":
                 fig_ae = make_subplots(specs=[[{"secondary_y": False}]])
                 
                 # Lissage optionnel
-                if smooth_factor > 0:
-                    from scipy.signal import savgol_filter
-                    window_length = min(len(ae_history), max(3, int(len(ae_history) * smooth_factor)))
-                    if window_length % 2 == 0:
-                        window_length += 1
-                    
+                if smooth_factor > 0 and len(ae_history) > 3:
+                    window_length = max(3, int(len(ae_history) * smooth_factor))
+                    window_length = window_length + 1 if window_length % 2 == 0 else window_length
+                    if window_length <= 2:
+                        window_length = 3
                     train_smooth = savgol_filter(ae_history['train_loss'], window_length, 2)
                     val_smooth = savgol_filter(ae_history['val_loss'], window_length, 2)
                 else:
                     train_smooth = ae_history['train_loss']
                     val_smooth = ae_history['val_loss']
+                    if smooth_factor == 0:
+                        st.warning("⚠️ Lissage désactivé : smooth_factor=0")
+                    elif len(ae_history) <= 3:
+                        st.warning("⚠️ Lissage désactivé : pas assez de données")
                 
                 mode = 'lines+markers' if show_points else 'lines'
                 
@@ -850,51 +862,54 @@ elif selected_tab == "🔮 Prédiction":
         t2_mask_file = st.file_uploader("Timepoint 2 - Tumor Mask (NIfTI)", type=["nii", "gz"])
     
     if t1_brain_file and t1_mask_file and t2_brain_file and t2_mask_file:
-        # Chargement des données
-        t1_brain = nib.load(io.BytesIO(t1_brain_file.read())).get_fdata()
-        t1_mask = nib.load(io.BytesIO(t1_mask_file.read())).get_fdata()
-        t2_brain = nib.load(io.BytesIO(t2_brain_file.read())).get_fdata()
-        t2_mask = nib.load(io.BytesIO(t2_mask_file.read())).get_fdata()
-        
-        # Prédiction
-        if st.button("🔮 Lancer la Prédiction"):
-            with st.spinner("Prédiction en cours..."):
-                pred_prob, pred_binary = predict_tumor_evolution(
-                    autoencoder, predictor, t1_brain, t2_brain, t1_mask, t2_mask
-                )
+        try:
+            # Chargement des données
+            t1_brain = load_nifti_file(t1_brain_file)
+            t1_mask = load_nifti_file(t1_mask_file)
+            t2_brain = load_nifti_file(t2_brain_file)
+            t2_mask = load_nifti_file(t2_mask_file)
             
-            st.success("✅ Prédiction terminée!")
-            
-            # Affichage des résultats
-            st.markdown("### 📊 Résultats de Prédiction")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Visualisation Comparée")
-                slice_idx = st.slider("Slice à visualiser", 0, pred_prob.shape[0] - 1, pred_prob.shape[0] // 2)
-                comp_img = create_comparison_plot(t1_mask, t2_mask, pred_prob, pred_binary, slice_idx)
-                st.image(comp_img, use_column_width=True)
-            
-            with col2:
-                st.subheader("Visualisation 3D")
-                st.plotly_chart(create_3d_visualization(pred_prob, "Prédiction Probabiliste T3"))
-                st.plotly_chart(create_3d_visualization(pred_binary, "Prédiction Binaire T3"))
-            
-            # Téléchargements
-            st.markdown("### 📥 Télécharger les Résultats")
-            
-            # Probabiliste
-            prob_nii = nib.Nifti1Image(pred_prob, np.eye(4))
-            prob_bytes = io.BytesIO()
-            nib.save(prob_nii, prob_bytes)
-            download_button_with_data(prob_bytes.getvalue(), "pred_prob.nii.gz", "Télécharger Masque Probabiliste")
-            
-            # Binaire
-            bin_nii = nib.Nifti1Image(pred_binary, np.eye(4))
-            bin_bytes = io.BytesIO()
-            nib.save(bin_nii, bin_bytes)
-            download_button_with_data(bin_bytes.getvalue(), "pred_binary.nii.gz", "Télécharger Masque Binaire")
+            # Prédiction
+            if st.button("🔮 Lancer la Prédiction"):
+                with st.spinner("Prédiction en cours..."):
+                    pred_prob, pred_binary = predict_tumor_evolution(
+                        autoencoder, predictor, t1_brain, t2_brain, t1_mask, t2_mask
+                    )
+                
+                st.success("✅ Prédiction terminée!")
+                
+                # Affichage des résultats
+                st.markdown("### 📊 Résultats de Prédiction")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("Visualisation Comparée")
+                    slice_idx = st.slider("Slice à visualiser", 0, pred_prob.shape[0] - 1, pred_prob.shape[0] // 2)
+                    comp_img = create_comparison_plot(t1_mask, t2_mask, pred_prob, pred_binary, slice_idx)
+                    st.image(comp_img, use_column_width=True)
+                
+                with col2:
+                    st.subheader("Visualisation 3D")
+                    st.plotly_chart(create_3d_visualization(pred_prob, "Prédiction Probabiliste T3"))
+                    st.plotly_chart(create_3d_visualization(pred_binary, "Prédiction Binaire T3"))
+                
+                # Téléchargements
+                st.markdown("### 📥 Télécharger les Résultats")
+                
+                # Probabiliste
+                prob_nii = nib.Nifti1Image(pred_prob, np.eye(4))
+                prob_bytes = io.BytesIO()
+                nib.save(prob_nii, prob_bytes)
+                download_button_with_data(prob_bytes.getvalue(), "pred_prob.nii.gz", "Télécharger Masque Probabiliste")
+                
+                # Binaire
+                bin_nii = nib.Nifti1Image(pred_binary, np.eye(4))
+                bin_bytes = io.BytesIO()
+                nib.save(bin_nii, bin_bytes)
+                download_button_with_data(bin_bytes.getvalue(), "pred_binary.nii.gz", "Télécharger Masque Binaire")
+        except Exception as e:
+            st.error(f"❌ Erreur lors du chargement ou de la prédiction : {e}")
 
 elif selected_tab == "📋 Évaluation":
     st.markdown("## 📋 Évaluation du Modèle")
