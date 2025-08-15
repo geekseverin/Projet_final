@@ -1,0 +1,2 @@
+patient_id,lstm_dice,diff_dice,lstm_iou,diff_iou,lstm_sensitivity,diff_sensitivity
+PatientID_0006,0.05495806038379669,0.056354667991399765,0.028255462646484104,0.02899431662766258,0.0,0.0
